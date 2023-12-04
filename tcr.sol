@@ -1,307 +1,262 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.0;
 
-import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
-import "@openzeppelin/contracts/utils/math/SafeMath.sol";
+contract TCR {
+    address owner;
+    string public javaCode;
+    uint256 public complexity;
+    uint256 public duration;
+    uint256 public groupSize;
+    uint256 public voterCount;
+    uint8[] public waiting;
 
-contract SistemaDeRevisaoDeCodigo is ERC20 {
-    using SafeMath for uint256;
+    mapping(address => bool) hasVoted;
+    mapping(address => uint8) groupLetter;
+    mapping(address => int8) javaVote;
+    mapping(uint8 => mapping(uint256 => mapping(address => int8))) objectionVote;
+    mapping(uint8 => mapping(uint256 => mapping(address => bool))) hasVotedForObjection;
 
-    struct Codigo {
-        address autor;
-        uint256 complexidade;
-        string conteudoCodigo;
-        uint256 horarioInicio;
-        uint256 tempoVotacao;
-        bool estaAberto;
-        bool foiAceito;
-        uint256 likes;
-        uint256 dislikes;
-        uint256 objecoes;
+    struct Group {
+        address[] members;
+        Objection[] objections;
+        uint256 phaseEndTime;
+        uint256 phaseStartTime;
+        int256 currentObjection;
+        int256 javaCodeVote;
     }
 
-    struct Objecao {
-        address objetor;
-        uint256 indiceCodigo;
-        string conteudoObjecao;
-        uint256 horarioInicio;
-        uint256 tempoVotacao;
-        bool estaAberta;
-        bool foiAceita;
-        uint256 likes;
-        uint256 dislikes;
-        uint8 fase; // Atributo para rastrear a trajetória da objeção
+    struct Objection {
+        address creator;
+        string description;
+        uint256 endTime;
+        uint256 startTime;
+        int256 objectionVote;
+        bool resolved;
     }
 
-    enum Fase { Inicializando, Votacao, VotacaoObjecoes, VotacaoFinal, Encerrado }
+    Group[3] groups; //A (0), B (1), C (2)
 
-    Fase public faseAtual;
-    uint256 public indiceGrupoAtual;
-    uint256 public tamanhoGrupo;
-    uint256 public limiteTempo;
+    enum Phase { Initialization, Phase1, Phase2, Phase3, Ended}
 
-    uint256 public limiteConfianca;
-    uint256 public minVotos;
+    Phase public currentPhase = Phase.Initialization;
 
-    Codigo[] public codigos;
-    Objecao[] public objecoes;
-    mapping(uint256 => uint8) public trajetoriaObjecao;
-
-    address[] public grupoA;
-    address[] public grupoB;
-    address[] public grupoC;
-
-    mapping(address => bool) public jaVotou;
-
-    address public enderecoToken;
-
-    uint256 public pagamentoInicial;
-    uint256 public taxaObjecao;
-    uint256 public taxaVoto;
-
-    mapping(address => bool) public emitiuObjecao;
-
-    event CodigoFinalizado(bool foiAceito);
-    event FaseAlterada(Fase fase);
-
-    constructor(
-        uint256 _tamanhoGrupo,
-        uint256 _limiteTempo,
-        uint256 _limiteConfianca,
-        uint256 _minVotos,
-        uint256 _pagamentoInicial,
-        uint256 _taxaObjecao,
-        uint256 _taxaVoto,
-        address _enderecoToken
-    ) ERC20("TokenRevisaoCodigo", "TRC") {
-        tamanhoGrupo = _tamanhoGrupo;
-        limiteTempo = _limiteTempo;
-        limiteConfianca = _limiteConfianca;
-        minVotos = _minVotos;
-        faseAtual = Fase.Inicializando;
-        indiceGrupoAtual = 0;
-        pagamentoInicial = _pagamentoInicial;
-        taxaObjecao = _taxaObjecao;
-        taxaVoto = _taxaVoto;
-        enderecoToken = _enderecoToken;
-
-        _mint(msg.sender, _pagamentoInicial);
-    }
-
-    modifier apenasDuranteFase(Fase _fase) {
-        require(faseAtual == _fase, "Fase invalida");
+    modifier onlyDuringPhase(Phase _phase) {
+        require(currentPhase == _phase, "Function can only be called during a specific phase");
         _;
     }
 
-    modifier naoVotou() {
-        require(!jaVotou[msg.sender], "Voce ja votou");
-        _;
+    constructor(string memory _javaCode, uint256 _complexity, uint256 _groupSize) {
+        owner = msg.sender;
+        javaCode = _javaCode;
+        complexity = _complexity;
+        groupSize = _groupSize;
+        duration = complexity * 86400;
     }
 
-    modifier temSuficientesTokens(uint256 quantidade) {
-        require(balanceOf(msg.sender) >= quantidade, "Saldo de tokens insuficiente");
-        _;
+    event TransitionToPhase(Phase indexed phase);
+
+    function checkCurrentObjection() external onlyDuringPhase(Phase.Phase1) returns (string memory, uint256) {
+        uint8 letter;
+
+        letter = groupLetter[msg.sender];
+        require (letter > 0 && groups[letter].currentObjection >= 0, "No objection yet");
+        checkObjectionTime(letter);
+        return (groups[letter].objections[uint(groups[letter].currentObjection)].description,
+        groups[letter].objections[uint(groups[letter].currentObjection)].endTime);
     }
 
-    function resetarVotos() internal returns (mapping(address => bool) memory) {
-        for (uint256 i = 0; i < tamanhoGrupo; i++) {
-            jaVotou[codigos[indiceGrupoAtual * tamanhoGrupo + i].autor] = false;
+    function checkGroupsEndTime() external returns (uint256, uint256, uint256) {
+        checkPhaseTransition();
+        return (groups[0].phaseEndTime, groups[1].phaseEndTime, groups[2].phaseEndTime);
+    }
+
+    function checkObjectionTime(uint8 letter) internal {
+        uint256 index;
+
+        index = uint(groups[letter].currentObjection);
+        if (groups[letter].currentObjection >= 0) {
+            if (block.timestamp > groups[letter].objections[index].endTime) {
+                if (groups[letter].objections[index].objectionVote > 0) {
+                    groups[letter].objections[index].resolved = true;
+                    waiting[letter] = 1;
+                }
+            }
+
         }
-        return jaVotou;
     }
 
-    function inicializarCodigo(uint256 _complexidade, string memory _conteudo) external apenasDuranteFase(Fase.Inicializando) {
-        require(balanceOf(msg.sender) >= pagamentoInicial, "Saldo insuficiente para pagamento inicial");
-        _transfer(msg.sender, address(this), pagamentoInicial);
+    function checkPhaseTransition() internal returns (bool) {
+        uint checkSum;
+        bool keep;
 
-        codigos.push(Codigo({
-            autor: msg.sender,
-            complexidade: _complexidade,
-            conteudoCodigo: _conteudo,
-            horarioInicio: block.timestamp,
-            tempoVotacao: block.timestamp + limiteTempo,
-            estaAberto: true,
-            foiAceito: false,
-            likes: 0,
-            dislikes: 0,
-            objecoes: 0
-        }));
-
-        faseAtual = Fase.Votacao;
-        emit FaseAlterada(faseAtual);
+        for (uint8 i = 0; i < 3; i++) {
+            if (waiting[i] == 0) {
+                if (block.timestamp > groups[0].phaseEndTime) {
+                    waiting[i] = 1;
+                }
+            }
+            checkSum = checkSum + waiting[i];
+        }
+        if (checkSum == 3) {
+            phaseTransition();
+            keep = false;
+        }
+        else {
+            keep = true;
+        }
+        return keep;
     }
 
-    function votarCodigo(bool _gostou) external apenasDuranteFase(Fase.Votacao) naoVotou temSuficientesTokens(taxaVoto) {
-        uint256 indiceCodigo = indiceGrupoAtual * tamanhoGrupo + jaVotou[msg.sender];
-        jaVotou[msg.sender] = true;
+    function checkWinningObjections() external view onlyDuringPhase(Phase.Phase2) returns (string memory, string memory, string memory) {
+        uint8 letter;
 
-        if (_gostou) {
-            codigos[indiceCodigo].likes++;
+        letter = groupLetter[msg.sender];
+        require (letter > 0, "Invalid caller");
+        return (groups[0].objections[uint(groups[0].currentObjection)].description,
+        groups[1].objections[uint(groups[1].currentObjection)].description,
+        groups[2].objections[uint(groups[2].currentObjection)].description);
+    }
+
+    function initialize() external onlyDuringPhase(Phase.Initialization) {
+        require(groupLetter[msg.sender] == 0 && voterCount < groupSize * 3, "All groups are already filled");
+
+        if (voterCount % 3 == 0) {
+            groups[0].members.push(msg.sender);
+            groupLetter[msg.sender] = 1;
+        } else if (voterCount % 3 == 1) {
+            groups[1].members.push(msg.sender);
+            groupLetter[msg.sender] = 2;
         } else {
-            codigos[indiceCodigo].dislikes++;
+            groups[2].members.push(msg.sender);
+            groupLetter[msg.sender] = 3;
         }
 
-        if (block.timestamp >= codigos[indiceCodigo].tempoVotacao) {
-            encerrarFaseVotacao();
+        if (voterCount == groupSize * 3) {
+            groups[0].currentObjection = -1;
+            groups[1].currentObjection = -1;
+            groups[2].currentObjection = -1;
+            phaseTransition();
+        }
+        voterCount++;
+    }
+
+    function phaseTransition() internal {
+        uint8 increase;
+
+        if (currentPhase == Phase.Initialization) {
+            increase = 1;
+            currentPhase = Phase.Phase1;
+            emit TransitionToPhase(Phase.Phase1);
+        }
+        else if (currentPhase == Phase.Phase1) {
+            increase = 2;
+            currentPhase = Phase.Phase2;
+            emit TransitionToPhase(Phase.Phase2);
+        }
+        else if (currentPhase == Phase.Phase2) {
+            increase = 3;
+            currentPhase = Phase.Phase3;
+            emit TransitionToPhase(Phase.Phase3);
+        }
+        for (uint8 i = 0; i < 3; i++) {
+            groups[i].phaseStartTime += increase * duration;
+            groups[i].phaseStartTime = block.timestamp;
+            waiting[i] = 0;
         }
     }
 
-    function levantarObjecao(uint256 _indiceCodigo, string memory _conteudoObjecao) 
-        external 
-        apenasDuranteFase(Fase.VotacaoObjecoes) 
-        naoVotou 
-        temSuficientesTokens(taxaObjecao) 
-    {
-        require(_indiceCodigo < codigos.length, "Indice de codigo invalido");
-        require(!codigos[_indiceCodigo].estaAberto, "O codigo ainda esta aberto para votacao");
-        require(!emitiuObjecao[msg.sender], "Ja emitiu uma objecao");
+    function raiseObjection(string memory _description) external onlyDuringPhase(Phase.Phase1) returns (string memory) {
+        if (checkPhaseTransition()) {
+            uint8 letter;
+            uint256 index;
 
-        objecoes.push(Objecao({
-            objetor: msg.sender,
-            indiceCodigo: _indiceCodigo,
-            conteudoObjecao: _conteudoObjecao,
-            horarioInicio: block.timestamp,
-            tempoVotacao: block.timestamp + limiteTempo,
-            estaAberta: true,
-            foiAceita: false,
-            likes: 0,
-            dislikes: 0,
-            fase: 1 // 1 representa a trajetória inicial na Fase 1
-        }));
-
-        emitiuObjecao[msg.sender] = true;
-
-        emit ObjecaoSubmetida(objecoes.length - 1);
-
-        if (objecoes.length % tamanhoGrupo == 0) {
-            indiceGrupoAtual++;
+            letter = groupLetter[msg.sender];
+            if (letter > 0) {
+                letter--;
+            }
+            else {
+                return "Invalid caller";
+            }
+            checkObjectionTime(letter);
+            index = uint(groups[letter].currentObjection);
+            if (groups[letter].currentObjection >= 0) {
+                if (!(waiting[letter] == 0 &&
+                block.timestamp > groups[letter].objections[index].endTime)) {
+                    return "The current objection is still running";
+                }
+            }
+            groups[letter].objections.push(Objection({creator: msg.sender, description: _description,
+            endTime: block.timestamp + duration / 5, startTime: block.timestamp, objectionVote: 0, resolved: false}));
+            groups[letter].currentObjection++;
+            groups[letter].phaseEndTime += duration / 5;
+            return "Objection raised";
         }
-
-        if (block.timestamp >= objecoes[indiceGrupoAtual * tamanhoGrupo].tempoVotacao) {
-            encerrarFaseVotacaoObjecoes();
+        else {
+            return "Phase over";
         }
     }
 
-    function votarObjecao(uint256 _indiceObjecao, bool _gostou) 
-        external 
-        apenasDuranteFase(Fase.VotacaoObjecoes) 
-        naoVotou 
-        temSuficientesTokens(taxaVoto) 
-    {
-        require(indiceGrupoAtual * tamanhoGrupo < objecoes.length, "Todas as objecoes foram votadas");
+    function voteJavaCode(int8 vote) external onlyDuringPhase(Phase.Phase1) returns (string memory) {
+        if (checkPhaseTransition()) {
+            if (!(vote == 1 || vote == -1)) {
+                return "Invalid vote value. Should be 1 (like) or -1 (dislike)";
+            }
 
-        uint256 indiceObjecao = indiceGrupoAtual * tamanhoGrupo + jaVotou[msg.sender];
-        jaVotou[msg.sender] = true;
+            uint8 letter;
 
-        if (_gostou) {
-            objecoes[indiceObjecao].likes++;
-        } else {
-            objecoes[indiceObjecao].dislikes++;
+            letter = groupLetter[msg.sender];
+            if (letter > 0) {
+                letter--;
+            }
+            else {
+                return "Invalid caller";
+            }
+            checkObjectionTime(letter);
+            if (hasVoted[msg.sender]) {
+                groups[letter].javaCodeVote -= javaVote[msg.sender]; //Reverting vote
+            }
+
+            if (vote == 1) {
+                groups[letter].javaCodeVote++;
+            }
+            else {
+                groups[letter].javaCodeVote--;
+            }
+            hasVoted[msg.sender] = true;
+            javaVote[msg.sender] = vote;
+            return "Success";
         }
-
-        if (block.timestamp >= objecoes[indiceObjecao].tempoVotacao) {
-            encerrarFaseVotacaoObjecoes();
-        }
-    }
-
-    function iniciarVotacaoFinal() external apenasDuranteFase(Fase.VotacaoFinal) {
-        faseAtual = Fase.VotacaoFinal;
-        emit FaseAlterada(faseAtual);
-    }
-
-    function votarObjecaoFinal(uint256 _indiceObjecao, bool _gostou) 
-        external 
-        apenasDuranteFase(Fase.VotacaoFinal) 
-        naoVotou 
-        temSuficientesTokens(taxaVoto) 
-    {
-        require(_indiceObjecao < objecoes.length, "Indice de objecao invalido");
-
-        uint256 indiceObjecao = _indiceObjecao;
-        jaVotou[msg.sender] = true;
-
-        if (_gostou) {
-            objecoes[indiceObjecao].likes++;
-        } else {
-            objecoes[indiceObjecao].dislikes++;
-        }
-
-        if (block.timestamp >= objecoes[indiceObjecao].tempoVotacao) {
-            encerrarFaseVotacaoFinal();
+        else {
+            return "Phase over";
         }
     }
 
-    function encerrarFaseVotacao() internal {
-        bool foiCodigoAceito = true;
+    function voteObjection(int8 vote) external returns (string memory) {
+        uint8 letter;
+        uint256 index;
 
-        // Lógica para determinar se o código é aceito ou não com base nos votos
-        for (uint256 i = 0; i < codigos.length; i++) {
-            uint256 votosTotais = codigos[i].likes + codigos[i].dislikes;
+        letter = groupLetter[msg.sender];
+        checkObjectionTime(letter);
+        if (letter > 0) {
+            letter--;
+        }
+        else {
+            return "Invalid caller";
+        }
+        index = uint(groups[letter].currentObjection);
+        if (groups[letter].currentObjection >= 0) {
+            if (!(waiting[letter] == 0 &&
+            block.timestamp < groups[letter].objections[index].endTime)) {
+                return "The current objection is closed";
+            }
 
-            if (votosTotais < minVotos || codigos[i].likes.mul(100).div(votosTotais) < limiteConfianca) {
-                foiCodigoAceito = false;
-                break;
+            if (hasVotedForObjection[letter][index][msg.sender]) {
+                groups[letter].objections[index].objectionVote -= objectionVote[letter][index][msg.sender];
             }
         }
-
-        if (foiCodigoAceito) {
-            // Emitir recompensas aos eleitores
-            distribuirRecompensas();
-            emit CodigoFinalizado(true);
-        } else {
-            emit CodigoFinalizado(false);
-        }
-
-        faseAtual = Fase.Encerrado;
-        emit FaseAlterada(faseAtual);
-    }
-
-    function encerrarFaseVotacaoObjecoes() internal {
-        bool foramObjecoesAceitas = true;
-
-        // Lógica para determinar se as objeções são aceitas ou não com base nos votos
-        for (uint256 i = 0; i < objecoes.length; i++) {
-            uint256 votosTotais = objecoes[i].likes + objecoes[i].dislikes;
-
-            if (votosTotais < minVotos || objecoes[i].likes.mul(100).div(votosTotais) < limiteConfianca) {
-                foramObjecoesAceitas = false;
-                break;
-            }
-        }
-
-        if (!foramObjecoesAceitas) {
-            encerrarFaseVotacao();
-        } else {
-            indiceGrupoAtual = 0; // Reiniciar o índice do grupo para a Fase 2
-        }
-    }
-
-    function encerrarFaseVotacaoFinal() internal {
-        bool foramObjecoesAceitas = true;
-
-        // Lógica para determinar se as objeções são aceitas ou não com base nos votos
-        for (uint256 i = 0; i < objecoes.length; i++) {
-            uint256 votosTotais = objecoes[i].likes + objecoes[i].dislikes;
-
-            if (votosTotais < minVotos || objecoes[i].likes.mul(100).div(votosTotais) < limiteConfianca) {
-                foramObjecoesAceitas = false;
-                break;
-            }
-        }
-
-        if (foramObjecoesAceitas) {
-            // Emitir recompensas aos eleitores
-            distribuirRecompensas();
-            emit CodigoFinalizado(true);
-        } else {
-            emit CodigoFinalizado(false);
-        }
-
-        faseAtual = Fase.Encerrado;
-        emit FaseAlterada(faseAtual);
-    }
-
-    function distribuirRecompensas() internal {
-        //
+        groups[letter].objections[index].objectionVote += vote;
+        hasVotedForObjection[letter][index][msg.sender] = true;
+        objectionVote[letter][index][msg.sender] = vote;
+        return "Succes";
     }
 }
