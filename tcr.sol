@@ -21,7 +21,7 @@ contract TCR {
         Objection[] objections;
         uint256 phaseEndTime;
         uint256 phaseStartTime;
-        int256 currentObjection;
+        int256[] currentObjection; //0 indice, 1 vencedora na primeira fase, 2 atual para o primeiro grupo a ser reavaliado 3 atual para o segundo grupo a ser reavaliado
         int256 javaCodeVote;
     }
 
@@ -31,6 +31,7 @@ contract TCR {
         uint256 endTime;
         uint256 startTime;
         int256 objectionVote;
+        int256 subject;
         bool resolved;
     }
 
@@ -53,16 +54,25 @@ contract TCR {
         duration = complexity * 86400;
     }
 
+    event EvaluationCompleted(string result);
     event TransitionToPhase(Phase indexed phase);
 
-    function checkCurrentObjection() external onlyDuringPhase(Phase.Phase1) returns (string memory, uint256) {
+    function checkObjection(uint8 _index) internal returns (string memory, uint256) {
         uint8 letter;
 
         letter = groupLetter[msg.sender];
-        require (letter > 0 && groups[letter].currentObjection >= 0, "No objection yet");
+        require (letter > 0 && groups[letter].currentObjection[_index] >= 0, "No objection yet");
         checkObjectionTime(letter);
-        return (groups[letter].objections[uint(groups[letter].currentObjection)].description,
-        groups[letter].objections[uint(groups[letter].currentObjection)].endTime);
+        return (groups[letter].objections[uint(groups[letter].currentObjection[_index])].description,
+        groups[letter].objections[uint(groups[letter].currentObjection[_index])].endTime);
+    }
+
+    function checkPhase1() external onlyDuringPhase(Phase.Phase1) returns (string memory, uint256) {
+        return checkObjection(0);
+    }
+
+    function checkPhase2(uint8 _index) external onlyDuringPhase(Phase.Phase2) returns (string memory, uint256) {
+        return checkObjection(_index);
     }
 
     function checkGroupsEndTime() external returns (uint256, uint256, uint256) {
@@ -70,18 +80,19 @@ contract TCR {
         return (groups[0].phaseEndTime, groups[1].phaseEndTime, groups[2].phaseEndTime);
     }
 
-    function checkObjectionTime(uint8 letter) internal {
+    function checkObjectionTime(uint8 letter) internal returns (uint8) { //mudei 21/12
         uint256 index;
 
-        index = uint(groups[letter].currentObjection);
-        if (groups[letter].currentObjection >= 0) {
-            if (block.timestamp > groups[letter].objections[index].endTime) {
-                if (groups[letter].objections[index].objectionVote > 0) {
-                    groups[letter].objections[index].resolved = true;
-                    waiting[letter] = 1;
-                }
-            }
-
+        index = uint(groups[letter].currentObjection[0]);
+        if (groups[letter].currentObjection[0] >= 0 &&
+        block.timestamp > groups[letter].objections[index].endTime &&
+        groups[letter].objections[index].objectionVote > 0) {
+            groups[letter].objections[index].resolved = true;
+            waiting[letter] = 1;
+            return 1;
+        }
+        else {
+            return 0;
         }
     }
 
@@ -95,7 +106,7 @@ contract TCR {
                     waiting[i] = 1;
                 }
             }
-            checkSum = checkSum + waiting[i];
+            checkSum += waiting[i]; //mudei 21/12
         }
         if (checkSum == 3) {
             phaseTransition();
@@ -107,14 +118,14 @@ contract TCR {
         return keep;
     }
 
-    function checkWinningObjections() external view onlyDuringPhase(Phase.Phase2) returns (string memory, string memory, string memory) {
+    function checkWinningObjections1() external view onlyDuringPhase(Phase.Phase2) returns (string memory, string memory, string memory) {
         uint8 letter;
 
         letter = groupLetter[msg.sender];
         require (letter > 0, "Invalid caller");
-        return (groups[0].objections[uint(groups[0].currentObjection)].description,
-        groups[1].objections[uint(groups[1].currentObjection)].description,
-        groups[2].objections[uint(groups[2].currentObjection)].description);
+        return (groups[0].objections[uint(groups[0].currentObjection[1])].description,
+        groups[1].objections[uint(groups[1].currentObjection[1])].description,
+        groups[2].objections[uint(groups[2].currentObjection[1])].description);
     }
 
     function initialize() external onlyDuringPhase(Phase.Initialization) {
@@ -132,15 +143,17 @@ contract TCR {
         }
 
         if (voterCount == groupSize * 3) {
-            groups[0].currentObjection = -1;
-            groups[1].currentObjection = -1;
-            groups[2].currentObjection = -1;
+            for (uint8 i = 0; i < 3; i++) {
+                groups[0].currentObjection[i] = -1;
+                groups[1].currentObjection[i] = -1;
+                groups[2].currentObjection[i] = -1;
+            }
             phaseTransition();
         }
         voterCount++;
     }
 
-    function phaseTransition() internal {
+    function phaseTransition() internal { //mudei 21/12
         uint8 increase;
 
         if (currentPhase == Phase.Initialization) {
@@ -149,9 +162,24 @@ contract TCR {
             emit TransitionToPhase(Phase.Phase1);
         }
         else if (currentPhase == Phase.Phase1) {
-            increase = 2;
-            currentPhase = Phase.Phase2;
-            emit TransitionToPhase(Phase.Phase2);
+            uint8 checkSum;
+            for (uint8 i = 0; i < 3; i++) {
+                checkSum += checkObjectionTime(i);
+            }
+            if (checkSum == 3) {
+                for (uint8 i = 0; i < 3; i++) {
+                    groups[i].currentObjection[1] = groups[i].currentObjection[0];
+                }
+                increase = 2;
+                currentPhase = Phase.Phase2;
+                emit TransitionToPhase(Phase.Phase2);
+            }
+            else {
+                increase = 0;
+                currentPhase = Phase.Ended;
+                emit TransitionToPhase(Phase.Ended);
+                emit EvaluationCompleted("Approved");
+            }
         }
         else if (currentPhase == Phase.Phase2) {
             increase = 3;
@@ -159,13 +187,13 @@ contract TCR {
             emit TransitionToPhase(Phase.Phase3);
         }
         for (uint8 i = 0; i < 3; i++) {
-            groups[i].phaseStartTime += increase * duration;
+            groups[i].phaseEndTime += increase * duration;
             groups[i].phaseStartTime = block.timestamp;
             waiting[i] = 0;
         }
     }
 
-    function raiseObjection(string memory _description) external onlyDuringPhase(Phase.Phase1) returns (string memory) {
+    function raiseObjection(string memory _description, int256 _subject) internal returns (string memory) {
         if (checkPhaseTransition()) {
             uint8 letter;
             uint256 index;
@@ -178,22 +206,31 @@ contract TCR {
                 return "Invalid caller";
             }
             checkObjectionTime(letter);
-            index = uint(groups[letter].currentObjection);
-            if (groups[letter].currentObjection >= 0) {
+            index = uint(groups[letter].currentObjection[0]);
+            if (groups[letter].currentObjection[0] >= 0) {
                 if (!(waiting[letter] == 0 &&
                 block.timestamp > groups[letter].objections[index].endTime)) {
                     return "The current objection is still running";
                 }
             }
             groups[letter].objections.push(Objection({creator: msg.sender, description: _description,
-            endTime: block.timestamp + duration / 5, startTime: block.timestamp, objectionVote: 0, resolved: false}));
-            groups[letter].currentObjection++;
+            endTime: block.timestamp + duration / 5, startTime: block.timestamp, objectionVote: 0,
+            subject: _subject, resolved: false}));
+            groups[letter].currentObjection[0]++;
             groups[letter].phaseEndTime += duration / 5;
             return "Objection raised";
         }
         else {
             return "Phase over";
         }
+    }
+
+    function raisePhase1(string memory _description) external onlyDuringPhase(Phase.Phase1) returns (string memory) {
+        return raiseObjection(_description, -1);
+    }
+
+    function raisePhase2(string memory _description, int256 _subject) external onlyDuringPhase(Phase.Phase2) returns (string memory) {
+        return raiseObjection(_description, _subject);
     }
 
     function voteJavaCode(int8 vote) external onlyDuringPhase(Phase.Phase1) returns (string memory) {
@@ -231,7 +268,7 @@ contract TCR {
         }
     }
 
-    function voteObjection(int8 vote) external returns (string memory) {
+    function voteObjection(int256 _subject, int8 _vote) internal returns (string memory) {
         uint8 letter;
         uint256 index;
 
@@ -243,8 +280,8 @@ contract TCR {
         else {
             return "Invalid caller";
         }
-        index = uint(groups[letter].currentObjection);
-        if (groups[letter].currentObjection >= 0) {
+        index = uint(groups[letter].currentObjection[0]);
+        if (groups[letter].currentObjection[0] >= 0) {
             if (!(waiting[letter] == 0 &&
             block.timestamp < groups[letter].objections[index].endTime)) {
                 return "The current objection is closed";
@@ -254,9 +291,21 @@ contract TCR {
                 groups[letter].objections[index].objectionVote -= objectionVote[letter][index][msg.sender];
             }
         }
-        groups[letter].objections[index].objectionVote += vote;
+        groups[letter].objections[index].objectionVote += _vote;
         hasVotedForObjection[letter][index][msg.sender] = true;
-        objectionVote[letter][index][msg.sender] = vote;
+        objectionVote[letter][index][msg.sender] = _vote;
+        if (_subject > 0) {
+            groups[letter].currentObjection[uint(_subject) + 1] = groups[letter].currentObjection[0];
+        }
         return "Succes";
+    }
+
+    //atribuir depois de votar
+    function votePhase1(int8 _vote) external onlyDuringPhase(Phase.Phase1) returns (string memory) {
+        return voteObjection(-1, _vote);
+    }
+
+    function votePhase2(int256 _subject, int8 _vote) external onlyDuringPhase(Phase.Phase2) returns (string memory) {
+        return voteObjection(_subject, _vote);
     }
 }
