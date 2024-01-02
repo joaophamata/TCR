@@ -10,6 +10,10 @@ contract TCR {
     uint256 public voterCount;
     uint8[3] public waiting;
 
+    uint256 phaseEndTime_middle;
+    uint256 phaseStartTime_middle;
+    uint256 voterCount_middle;
+
     uint8 buffer;
 
     mapping(address => bool) hasVoted;
@@ -32,14 +36,14 @@ contract TCR {
         string description;
         uint256 endTime;
         uint256 startTime;
+        int8 resolved;
         int256 objectionVote;
         int256 subject;
-        bool resolved;
     }
 
-    Group[3] groups; //A (0), B (1), C (2)
+    Group[4] groups; //A (0), B (1), C (2), D (3)
 
-    enum Phase { Initialization, Phase1, Phase2, Phase3, Ended}
+    enum Phase { Initialization, Phase1, Phase2, Middle, Phase3, Ended}
 
     Phase public currentPhase = Phase.Initialization;
 
@@ -89,13 +93,6 @@ contract TCR {
         }
     }
 
-    //teste apenas
-    function fase2atualizada() external view returns (Objection memory, Objection memory, Objection memory, Objection memory, Objection memory, Objection memory) {
-        return (groups[0].objections[uint(groups[0].currentObjection[2])], groups[0].objections[uint(groups[0].currentObjection[3])],
-        groups[1].objections[uint(groups[1].currentObjection[2])], groups[1].objections[uint(groups[1].currentObjection[3])],
-        groups[2].objections[uint(groups[2].currentObjection[2])], groups[2].objections[uint(groups[2].currentObjection[3])]);
-    }
-
     function checkObjection(int256 _subject) internal returns (string memory, uint256) {
         uint8 letter;
 
@@ -135,7 +132,7 @@ contract TCR {
         // }
         if (groups[letter].currentObjection[0] >= 0 &&
         groups[letter].objections[index].objectionVote > 0) { //decidir o que ocorre em caso de < 0
-            groups[letter].objections[index].resolved = true;
+            groups[letter].objections[index].resolved = 1;
             waiting[letter] = 1;
             return 1;
         }
@@ -174,6 +171,55 @@ contract TCR {
         groups[2].objections[uint(groups[2].currentObjection[1])].description);
     }
 
+    function checkWinningObjections2() external view onlyDuringPhase(Phase.Phase2) returns (string memory, string memory, string memory, string memory, string memory, string memory) {
+        uint8 letter;
+
+        letter = groupLetter[msg.sender];
+        require (letter > 0, "Invalid caller");
+        return (groups[0].objections[uint(groups[0].currentObjection[2])].description,
+        groups[0].objections[uint(groups[0].currentObjection[3])].description,
+        groups[1].objections[uint(groups[1].currentObjection[2])].description,
+        groups[1].objections[uint(groups[1].currentObjection[3])].description,
+        groups[2].objections[uint(groups[2].currentObjection[2])].description,
+        groups[2].objections[uint(groups[2].currentObjection[3])].description);
+    }
+
+    function finalize() external onlyDuringPhase(Phase.Middle) returns (string memory) {
+        if (block.timestamp < groups[3].phaseEndTime) {
+            int8 checkSum;
+            uint8 letter;
+            uint256 index;
+
+            letter = groupLetter[msg.sender];
+            if (letter > 0) {
+                letter--;
+            }
+            else {
+                return "Invalid caller";
+            }
+            for (uint8 i = 1; i <= 3; i++) {
+                index = uint(groups[letter].currentObjection[i]);
+                checkSum += groups[letter].objections[i].resolved * objectionVote[letter][index][msg.sender];
+            }
+            if (checkSum == 3) {
+                groups[3].members.push(msg.sender);
+                groupLetter[msg.sender] = 4;
+                voterCount_middle++;
+                if (voterCount_middle == voterCount) {
+                    phaseTransition();
+                }
+                return "Passed to final phase";
+            }
+            else {
+                return "Your reward:";
+            }
+        }
+        else {
+            phaseTransition();
+            return "Phase over";
+        }
+    }
+
     function initialize() external onlyDuringPhase(Phase.Initialization) {
         require(groupLetter[msg.sender] == 0 && voterCount < groupSize * 3, "All groups are already filled");
 
@@ -198,12 +244,19 @@ contract TCR {
         }
     }
 
+    function phaseCorrection(uint8 increase) internal { //mudei 21/12
+        for (uint8 i = 0; i < 3; i++) {
+            groups[i].phaseStartTime = block.timestamp;
+            groups[i].phaseEndTime += groups[i].phaseStartTime + increase * duration;
+            waiting[i] = 0;
+        }
+    }
+
     function phaseTransition() internal { //mudei 21/12
         uint8 checkSum;
-        uint8 increase;
 
         if (currentPhase == Phase.Initialization) {
-            increase = 1;
+            phaseCorrection(1);
             currentPhase = Phase.Phase1;
             emit TransitionToPhase(Phase.Phase1);
         }
@@ -215,29 +268,33 @@ contract TCR {
                 for (uint8 i = 0; i < 3; i++) {
                     groups[i].currentObjection[1] = groups[i].currentObjection[0];
                 }
-                increase = 2;
+                phaseCorrection(2);
                 currentPhase = Phase.Phase2;
                 emit TransitionToPhase(Phase.Phase2);
             }
             else {
-                increase = 0;
                 currentPhase = Phase.Ended;
                 emit TransitionToPhase(Phase.Ended);
                 emit EvaluationCompleted("Approved");
             }
         }
         else if (currentPhase == Phase.Phase2) {
-            increase = 3;
+            for (uint8 i = 0; i < 7; i++) {
+                groups[i].currentObjection.push(-1);        
+            }
+            groups[3].phaseStartTime = block.timestamp;
+            groups[3].phaseEndTime += groups[3].phaseStartTime + duration;
+            currentPhase = Phase.Middle;
+            emit TransitionToPhase(Phase.Middle);
+        }
+        else if (currentPhase == Phase.Middle) {
+            groups[3].phaseStartTime = block.timestamp;
+            groups[3].phaseEndTime += groups[3].phaseStartTime + 3 * duration;
             currentPhase = Phase.Phase3;
             emit TransitionToPhase(Phase.Phase3);
         }
         else {
             currentPhase = Phase.Ended;
-        }
-        for (uint8 i = 0; i < 3; i++) {
-            groups[i].phaseStartTime = block.timestamp;
-            groups[i].phaseEndTime += groups[i].phaseStartTime + increase * duration;
-            waiting[i] = 0;
         }
     }
 
@@ -254,7 +311,7 @@ contract TCR {
                 return "Invalid caller";
             }
             buffer = checkObjectionTime(letter);
-            index = uint(groups[letter].currentObjection[uint(_subject + 1)]);
+            index = uint(groups[letter].currentObjection[uint(_subject + 1)]); //atencao quanto ao 1
             // if (groups[letter].currentObjection[0] >= 0 && !(waiting[letter] == 0 &&
             // block.timestamp > groups[letter].objections[index].endTime)) {
             //     return "The current objection is still running";
@@ -264,7 +321,7 @@ contract TCR {
             }
             groups[letter].objections.push(Objection({creator: msg.sender, description: _description,
             endTime: block.timestamp + duration / 5, startTime: block.timestamp, objectionVote: 0,
-            subject: _subject, resolved: false}));
+            subject: _subject, resolved: -1}));
             groups[letter].currentObjection[0]++;
             groups[letter].phaseEndTime += duration / 5;
             if (_subject > 0) {
@@ -282,6 +339,11 @@ contract TCR {
     }
 
     function raisePhase2(string memory _description, int256 _subject) external onlyDuringPhase(Phase.Phase2) returns (string memory) {
+        require(_subject > 0, "Escolha valores superiores a 1");
+        return raiseObjection(_description, _subject);
+    }
+
+    function raisePhase3(string memory _description, int256 _subject) external onlyDuringPhase(Phase.Phase2) returns (string memory) {
         require(_subject > 0, "Escolha valores superiores a 1");
         return raiseObjection(_description, _subject);
     }
@@ -355,6 +417,11 @@ contract TCR {
     }
 
     function votePhase2(int256 _subject, int8 _vote) external onlyDuringPhase(Phase.Phase2) returns (string memory) {
+        require(_subject > 0, "Escolha valores superiores a 1");
+        return voteObjection(_subject, _vote);
+    }
+
+    function votePhase3(int256 _subject, int8 _vote) external onlyDuringPhase(Phase.Phase2) returns (string memory) {
         require(_subject > 0, "Escolha valores superiores a 1");
         return voteObjection(_subject, _vote);
     }
