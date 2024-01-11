@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.0;
 
+import "./ERC20.sol"; //ERC20
+
+
 contract TCR {
     address owner;
     string public javaCode;
@@ -14,6 +17,8 @@ contract TCR {
     uint256 phaseStartTime_middle;
     uint256 voterCount_middle;
 
+    IERC20 public immutable TCRtoken0; //ERC20
+
     uint8 buffer;
 
     mapping(address => bool) hasVoted;
@@ -21,6 +26,7 @@ contract TCR {
     mapping(address => int8) javaVote;
     mapping(uint8 => mapping(uint256 => mapping(address => int8))) objectionVote;
     mapping(uint8 => mapping(uint256 => mapping(address => bool))) hasVotedForObjection;
+    mapping(address => uint) public balanceOf; //ERC20
 
     struct Group {
         address[] members;
@@ -52,7 +58,9 @@ contract TCR {
         _;
     }
 
-    constructor(string memory _javaCode, uint256 _complexity, uint256 _groupSize) {
+    constructor(address TCRtokenContract, string memory _javaCode, uint256 _complexity, uint256 _groupSize) {
+        TCRtoken0 = IERC20(TCRtokenContract);
+        
         owner = msg.sender;
         javaCode = _javaCode;
         complexity = _complexity;
@@ -60,8 +68,30 @@ contract TCR {
         duration = complexity * 86400;
     }
 
+
+
     event EvaluationCompleted(string result);
     event TransitionToPhase(Phase indexed phase);
+
+    //Token distribution
+    function distributeTokensToGroupMembers(uint groupId) internal {
+        require(groups[groupId].members.length > 0, "No members in the group");
+
+        uint256 amountPerMember = calculateTokenAmount(groupId);
+
+        for (uint i = 0; i < groups[groupId].members.length; i++) {
+            address member = groups[groupId].members[i];
+            TCRtoken0.transfer(member, amountPerMember);
+        }
+    }
+
+    function calculateTokenAmount(uint groupId) internal view returns (uint256) {
+        uint256 amount = 100; // Example fixed amount
+        return amount;
+    }
+
+
+
 
     //teste apenas
     function avancarFase() external {
